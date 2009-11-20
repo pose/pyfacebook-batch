@@ -1,0 +1,121 @@
+diff --git a/facebook/__init__.py b/facebook/__init__.py
+index 3813142..e20fb6e 100644
+--- a/facebook/__init__.py
++++ b/facebook/__init__.py
+@@ -136,6 +136,12 @@ METHODS = {
+         ],
+     },
+ 
++    # batch methods
++    'batch': {
++        'begin': [],
++        'end': []
++    },
++
+     # feed methods
+     'feed': {
+         'publishStoryToUser': [
+@@ -812,6 +818,49 @@ class PhotosProxy(PhotosProxy):
+         """Returns a guess at the MIME type of the file from the filename."""
+         return str(mimetypes.guess_type(filename)[0]) or 'application/octet-stream'
+ 
++class BatchProxy(object):
++    """
++    Provides Batch API calls:
++
++        facebook.batch.begin
++        facebook.batch.end
++
++    Example:
++
++        >> b = self.fb.batch.begin()
++        >> b.users.getInfo([self.fb.uid], ['name', 'birthday', 'affiliations', 'sex'])
++        >> b.friends.get()
++        >> b.photos.getAlbums(self.fb.uid)
++        >> result = self.fb.batch.end()
++        result[0]()[0] #getInfo result
++
++        result[1]() #friends.get result
++
++        result[2]() #photos result
++
++    """
++    def __init__(self, client, name):
++        self._client = client
++        self._name = name
++        self.myfb = None
++
++    def begin(self):
++        #TODO: Ver si no es muy caro copiar todo el objeto, lo idea seria un objecto Session
++        import copy
++
++        self.myfb = copy.deepcopy(self._client)
++        self.myfb.autocommit = False
++        return self.myfb
++
++    def end(self):
++        """ Returns a list with the results as callables. """
++        if self.myfb is None:
++            raise RuntimeError('Called batch.end before batch.begin')
++        result = self.myfb.flush()
++        del self.myfb
++        return result
++
++
+ 
+ class Facebook(object):
+     """
+@@ -928,6 +977,11 @@ class Facebook(object):
+         self.profile_update_time = None
+         self.ext_perms = None
+         self.proxy = proxy
++
++        self.autocommit = True
++        self.active_transaction = []
++        self.secure_transaction = False
++
+         if facebook_url is None:
+             self.facebook_url = FACEBOOK_URL
+         else:
+@@ -1094,6 +1148,41 @@ class Facebook(object):
+         # fix for bug of UnicodeEncodeError
+         post_data = self.unicode_urlencode(self._build_post_args(method, args))
+ 
++        if not self.autocommit:
++            #TODO: Poner limite de 15 llamadas a la API
++            #TODO: Probar casos de escritura, no solo lectura
++            if not hasattr(self, 'active_transaction'):
++                self.active_transaction = []
++
++            if secure:
++                self.secure_transaction = True
++
++            self.active_transaction.append({'method': method, 'post_data': post_data})
++            return
++
++        return self.send(method, post_data, secure)
++
++    def flush(self):
++        post_data = self.unicode_urlencode( self._build_post_args('facebook.batch.run', 
++            self._add_session_args({ 'method_feed':simplejson.dumps(
++            [query['post_data'] for query in self.active_transaction])})))
++
++        print post_data
++    
++
++        results = self.send('facebook.batch.run', post_data)
++        print results
++
++
++        from itertools import count, izip
++        from functools import partial
++
++        results = [partial(self._parse_response,result, self.active_transaction[i]['method']) for result,i in izip(results, count())]
++
++        self.active_transaction = []
++        return results
++
++    def send(self,method=None, post_data=None, secure=False):
+         if self.proxy:
+             proxy_handler = urllib2.ProxyHandler(self.proxy)
+             opener = urllib2.build_opener(proxy_handler)
